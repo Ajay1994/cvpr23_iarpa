@@ -17,7 +17,7 @@ def configure_optimizers(model, head, lr=0.1, momentum=0.9, lr_milestones=[12,20
 
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=lr_milestones, gamma=lr_gamma)
 
-    return [optimizer], [scheduler]
+    return optimizer, scheduler
 
 def split_parameters(module):
     params_decay = []

@@ -246,7 +246,8 @@ class TurbulenceNet(nn.Module):
         if self.dual_pixel_task:
             self.skip_conv = nn.Conv2d(dim, int(dim*2**1), kernel_size=1, bias=bias)
         ###########################
-            
+        
+        self.aux_embedding = nn.Conv2d(int(dim*2**1), 3, kernel_size=3, stride=1, padding=1, bias=bias)
         self.output = nn.Conv2d(int(dim*2**1), out_channels, kernel_size=3, stride=1, padding=1, bias=bias)
         self.output2 = nn.Conv2d(int(dim*2**1), out_channels, kernel_size=3, stride=1, padding=1, bias=bias)
         
@@ -281,6 +282,8 @@ class TurbulenceNet(nn.Module):
         inp_dec_level1 = self.up2_1(out_dec_level2)
         inp_dec_level1 = torch.cat([inp_dec_level1, out_enc_level1], 1)
         out = self.decoder_level1(inp_dec_level1)
+
+        
         
         out_T = self.output2(self.refinement2(out))
         
@@ -291,7 +294,7 @@ class TurbulenceNet(nn.Module):
 
         out_I = (out_T * out_J) + out_eps
         
-        return out, out_J, out_T, out_I
+        return self.aux_embedding(out), out_J, out_T, out_I
 
 
 def get_model():

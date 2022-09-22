@@ -18,13 +18,16 @@ import math
 import torchvision.transforms as T
 from tqdm import tqdm
 from simulator_new import Simulator
+from models.adaface_model import *
+import loss
+import optim
 
 os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 use_cuda = torch.cuda.is_available()
 
 if __name__ == "__main__":
     
-    train_batch_size, test_batch_size = 8, 32
+    train_batch_size, test_batch_size = 6, 32
     num_epochs = 50
     all_T = 100000
     save_dir = "/data/ajay_data/cvpr2023/iarpa/faces_webface_112x112/checkpoint"
@@ -32,21 +35,28 @@ if __name__ == "__main__":
     if not os.path.isfile(save_dir):
         os.makedirs(os.path.dirname(save_dir), exist_ok=True)
 
-
-    net = get_model()
-    net = torch.nn.DataParallel(net)
-    net.cuda()
-
-    optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
-
     dataset = CustomImageFolderDataset(root = "/data/ajay_data/cvpr2023/iarpa/faces_webface_112x112/gt",
                                        transform=T.Compose([T.ToTensor(),T.RandomCrop(112)]),
                                        target_transform=None)
+    adaface_num_subjects = len(dataset.classes)
+    print("Number of Subjects for Adaface Training : {}".format(adaface_num_subjects))
     params = {'batch_size': train_batch_size,
               'shuffle': True,
               'num_workers': 8}
     dataloader = torch.utils.data.DataLoader(dataset, **params)
     print("DATALOADER DONE!")
+
+    net = get_model()
+    adaface_model = build_model(model_name='ir_101', loc_cross_att=2, aux_feature_dim=3)
+    head = loss.AdaFace(classnum=adaface_num_subjects)
+    net.cuda()
+    head.cuda()
+    adaface_model.cuda()
+
+    optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
+    optimizer2, lr_scheduler2 = optim.configure_optimizers(adaface_model, head,
+                                                         lr=0.5, momentum=0.9, lr_milestones=[6, 15, 25], lr_gamma=0.1)
+    
     
     turb_params = {
                 'img_size': (112,112),
@@ -67,7 +77,9 @@ if __name__ == "__main__":
         start_time = time.time()
         psnr_list = []
         # --- Save the network parameters --- #
-        torch.save(net.state_dict(), '{}/checkpoint_{}.pth'.format(save_dir, epoch))
+        torch.save(net.state_dict(), '{}/checkpoint_restore{}.pth'.format(save_dir, epoch))
+        torch.save(head.state_dict(), '{}/checkpoint_head{}.pth'.format(save_dir, epoch))
+        torch.save(adaface_model.state_dict(), '{}/checkpoint_adaface{}.pth'.format(save_dir, epoch))
 
         for batch_id, train_data in tqdm(enumerate(dataloader)):
             if batch_id > 5000:
@@ -80,27 +92,37 @@ if __name__ == "__main__":
             turb = turb.cuda()
             gt = gt.cuda()
             noise = (noise_loaded[0].squeeze(1).cuda(), noise_loaded[1].squeeze(1).cuda())
+            target = target.cuda()
 
             optimizer.zero_grad()
+            optimizer2.zero_grad()
 
             # --- Forward + Backward + Optimize --- #
             net.train()
-            _, J, T, I = net(turb)
+            head.train()
+            adaface_model.train()
+            feature_embedding, J, T, I = net(turb)
+            embeddings, norms = adaface_model(J, feature_embedding)
+            normalized_embedding  = embeddings / norms
+
             noise, _, _, sim_I = simulator(J, noise)
 
             Rec_Loss1 = F.smooth_l1_loss(J, gt)
             Rec_Loss2 = F.smooth_l1_loss(I, turb)
             Rec_Loss3 = F.smooth_l1_loss(sim_I, turb)
+            cosine_with_margin = head(normalized_embedding, norms, target)
+            AdaFace_loss = torch.nn.CrossEntropyLoss()(cosine_with_margin, target)
 
-            loss = Rec_Loss1 + Rec_Loss2 + Rec_Loss3
+            loss = Rec_Loss1 + Rec_Loss2 + Rec_Loss3 + AdaFace_loss
             loss.backward()
             optimizer.step()
-
+            optimizer2.step()
+            lr_scheduler2.step()
             # --- To calculate average PSNR --- #
             psnr_list.extend(to_psnr(J, gt))
 
             if not (batch_id % 100):
-                print('Epoch: {}, Iteration: {}, Loss: {:.3f}, Rec_Loss1: {:.3f}, Rec_loss2: {:.3f}, Rec_loss3: {:.3f}'.format(epoch, batch_id, loss, Rec_Loss1, Rec_Loss2, Rec_Loss3))
+                print('Epoch: {}, Iteration: {}, Loss: {:.3f}, Adaface_Loss: {:.3f}, Rec_Loss1: {:.3f}, Rec_loss2: {:.3f}, Rec_loss3: {:.3f}'.format(epoch, batch_id, loss, AdaFace_loss, Rec_Loss1, Rec_Loss2, Rec_Loss3))
 
         # --- Calculate the average training PSNR in one epoch --- #
         train_psnr = sum(psnr_list) / len(psnr_list)
