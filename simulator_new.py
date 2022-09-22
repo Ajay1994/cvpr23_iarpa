@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 class Simulator(nn.Module):
     '''
@@ -35,26 +36,26 @@ class Simulator(nn.Module):
             self.gh = self.h
         if self.w > self.gw:
             self.gw = self.w
-        self.device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('CPU')
+        # self.device = torch.device('cuda:0,1') if torch.cuda.is_available() else torch.device('CPU')
         # load the phase to space mapping model
         self.mapping = _P2S()
         self.mapping.load_state_dict(torch.load(os.path.join(data_path, 'P2S_model.pt')))
         # load the basis of point spread functions
         self.dict_psf = torch.load(os.path.join(data_path, 'dictionary.pt'))
-        self.mu = self.dict_psf['mu'].view(1, 1, 33, 33).to(self.device, dtype=torch.float32)
-        self.basis_psf = self.dict_psf['dictionary'].unsqueeze(1).to(self.device, dtype=torch.float32)
-        self.offset = torch.tensor([31, 31]).to(self.device) #?
+        self.mu = self.dict_psf['mu'].view(1, 1, 33, 33).type(torch.float32).cuda()
+        self.basis_psf = self.dict_psf['dictionary'].unsqueeze(1).type(torch.float32).cuda()
+        self.offset = torch.tensor([31, 31]).cuda() #?
         # define key parameters for simulation
         self.turb_params = turb_params
         self.D = turb_params['D']
         self.r0 = turb_params['r0']
-        self.Dr0 = torch.tensor(self.D/self.r0).to(self.device, dtype=torch.float32)
+        self.Dr0 = torch.tensor(self.D/self.r0).type(torch.float32).cuda()
         self.R_z, self.sqrt_psd = self._corr_mat(turb_params['corr'])
         self.I0_I2 = torch.load(os.path.join(data_path, 'I0_I2.pt'))
         self.const, self.S_half = self._tilt_mat()
         # define coordination
         yy, xx = torch.meshgrid(torch.arange(0, self.h),torch.arange(0, self.w))
-        self.pixel_pos = torch.stack((xx, yy), -1).unsqueeze(0).to(self.device, dtype=torch.float32)
+        self.pixel_pos = torch.stack((xx, yy), -1).unsqueeze(0).type(torch.float32).cuda()
 
     def change_param(self, new_turb_params):
         # call this to generate new correlation matrices for turbulence patterns
@@ -62,13 +63,13 @@ class Simulator(nn.Module):
             self.turb_params = new_turb_params
             self.D = new_turb_params['D']
             self.r0 = new_turb_params['r0']
-            self.Dr0 = torch.tensor(self.D/self.r0).to(self.device, dtype=torch.float32)
+            self.Dr0 = torch.tensor(self.D/self.r0).type(torch.float32).cuda()
             self.const, self.S_half = self._tilt_mat()
         else:
             self.turb_params = new_turb_params
             self.D = new_turb_params['D']
             self.r0 = new_turb_params['r0']
-            self.Dr0 = torch.tensor(self.D/self.r0).to(self.device, dtype=torch.float32)
+            self.Dr0 = torch.tensor(self.D/self.r0).type(torch.float32).cuda()
             self.const, self.S_half = self._tilt_mat()
             self.R_z, self.sqrt_psd = self._corr_mat(new_turb_params['corr'])
         
@@ -81,12 +82,12 @@ class Simulator(nn.Module):
                         weakest correlation and -0.01 has the strongest.
             num_zern   -  number of zernike coefficients. Default: 36
         '''
-        # subC = _nollCovMat(num_zern, self.D, self.r0).to(self.device)
-        subC = _nollCovMat(num_zern, 1, 1).to(self.device)  # current setting
+        # subC = _nollCovMat(num_zern, self.D, self.r0).cuda()
+        subC = _nollCovMat(num_zern, 1, 1).cuda()  # current setting
         e_val, e_vec = torch.linalg.eig(subC)
         R_z = torch.real(e_vec * torch.sqrt(e_val))
-        h = torch.linspace(0, self.gh-1, self.gh).to(self.device) - self.gh/2
-        w = torch.linspace(0, self.gw-1, self.gw).to(self.device) - self.gw/2
+        h = torch.linspace(0, self.gh-1, self.gh).cuda() - self.gh/2
+        w = torch.linspace(0, self.gw-1, self.gw).cuda() - self.gw/2
         yv, xv = torch.meshgrid(h, w)
         # dist = torch.exp(corr*(xv.abs()+yv.abs()))
         dist = torch.exp(corr*(xv**2 + yv**2)**0.5)
@@ -109,7 +110,7 @@ class Simulator(nn.Module):
         
         I0_arr, I2_arr = self._sample_in_vec(smax, spacing)
         h, w = torch.meshgrid(torch.arange(1, Nh+1), torch.arange(1, Nw+1))
-        s = torch.sqrt((h-Nh/2)**2 + (w-Nw/2)**2).to(self.device)
+        s = torch.sqrt((h-Nh/2)**2 + (w-Nw/2)**2).cuda()
 
         C0 = (I0_arr[s.long()] + I2_arr[s.long()])/I0_0
         C0[int(Nh/2), int(Nw/2)] = 1
@@ -125,8 +126,8 @@ class Simulator(nn.Module):
     def _sample_in_vec(self, smax, spacing):
         s_arr = torch.arange(0, smax, spacing)
         sample_idx = torch.argmin(torch.abs(s_arr.unsqueeze(1) - self.I0_I2['s'].unsqueeze(0)), dim=1)
-        return self.I0_I2['i0_integral'][sample_idx].float().to(self.device), \
-                self.I0_I2['i2_integral'][sample_idx].float().to(self.device)
+        return self.I0_I2['i0_integral'][sample_idx].float().cuda(), \
+                self.I0_I2['i2_integral'][sample_idx].float().cuda()
         
     def forward(self, img, noise = None):
         b, c = img.shape[0:2]
@@ -151,7 +152,7 @@ class Simulator(nn.Module):
             self.const, self.S_half = self._tilt_mat()
             self.R_z, self.sqrt_psd = self._corr_mat(self.turb_params['corr'])
             yy, xx = torch.meshgrid(torch.arange(0, self.h),torch.arange(0, self.w))
-            self.pixel_pos = torch.stack((xx, yy), -1).unsqueeze(0).to(self.device, dtype=torch.float32)
+            self.pixel_pos = torch.stack((xx, yy), -1).unsqueeze(0).type(torch.float32).cuda()
         # convolution of psf basis and the input image
         img_pad = F.pad(img.view((-1, 1, self.h, self.w)), (16, 16, 16, 16), mode='reflect')
         img_mean = F.conv2d(img_pad, self.mu).view(b, -1, self.h, self.w)
@@ -170,7 +171,7 @@ class Simulator(nn.Module):
         # distort the blurred image with tilt maps
         pos_shift = torch.fft.irfft2((self.S_half.permute(1, 2, 0).unsqueeze(0) * noise_tilt), s=(self.gh, self.gw), dim=(1,2)) * self.const
         pos_shift = pos_shift[:, :self.h, :self.w, :]
-        flow = 2.0*(self.pixel_pos + pos_shift) / (torch.tensor((self.w, self.h))-1).to(self.device) - 1.0
+        flow = 2.0*(self.pixel_pos + pos_shift) / (torch.tensor((self.w, self.h))-1).cuda() - 1.0
         out = F.grid_sample(out_blur, flow, 'bilinear', padding_mode='border', align_corners=False)
         return noise, flow, out_blur, out
 
