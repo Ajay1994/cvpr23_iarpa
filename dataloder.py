@@ -51,7 +51,7 @@ class CustomImageFolderDataset(datasets.ImageFolder):
             noise = torch.load(path.replace("gt", "noise").replace("jpg", "pt"))
         except:
             import random
-            return self.__getitem__(self, random.randint(0, 100))
+            return self.__getitem__(random.randint(0, 100))
 
         if self.swap_color_channel:
             # swap RGB to BGR if sample is in RGB
