@@ -42,12 +42,16 @@ class CustomImageFolderDataset(datasets.ImageFolder):
         Returns:
             tuple: (sample, target) where target is class_index of the target class.
         """
-        path, target = self.samples[index]
-        sample_gt = self.loader(path)
-        sample_gt = Image.fromarray(np.asarray(sample_gt)[:,:,::-1])
-        sample_input = self.loader(path.replace("gt", "sim"))
-        sample_input = Image.fromarray(np.asarray(sample_input)[:,:,::-1])
-        noise = torch.load(path.replace("gt", "noise").replace("jpg", "pt"))
+        try:
+            path, target = self.samples[index]
+            sample_gt = self.loader(path)
+            sample_gt = Image.fromarray(np.asarray(sample_gt)[:,:,::-1])
+            sample_input = self.loader(path.replace("gt", "sim"))
+            sample_input = Image.fromarray(np.asarray(sample_input)[:,:,::-1])
+            noise = torch.load(path.replace("gt", "noise").replace("jpg", "pt"))
+        except:
+            import random
+            return self.__getitem__(self, random.randint(0, 100))
 
         if self.swap_color_channel:
             # swap RGB to BGR if sample is in RGB
