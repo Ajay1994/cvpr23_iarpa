@@ -62,7 +62,7 @@ class CustomImageFolderDataset(datasets.ImageFolder):
         if self.is_augumenter:
             sample_input = self.augmenter.augment(sample_input)
 
-        sample_input_save_path = os.path.join(self.output_dir, 'training_samples', 'sample_input.jpg')
+        sample_input_save_path = os.path.join(self.output_dir, 'training_samples', 'sample_test.jpg')
         if not os.path.isfile(sample_input_save_path):
             os.makedirs(os.path.dirname(sample_input_save_path), exist_ok=True)
             cv2.imwrite(sample_input_save_path, np.array(sample_input))  # the result has to look okay (Not color swapped)
@@ -73,7 +73,7 @@ class CustomImageFolderDataset(datasets.ImageFolder):
         if self.target_transform is not None:
             target = self.target_transform(target)
 
-        return sample_input, sample_gt, noise, target
+        return sample_input, sample_gt, noise, target # turb, gt, noise_loaded, target
 
 if __name__ == '__main__':
     dataset = CustomImageFolderDataset(root = "/data/ajay_data/cvpr2023/iarpa/faces_webface_112x112/gt",

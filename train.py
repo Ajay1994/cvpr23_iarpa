@@ -22,13 +22,15 @@ from models.adaface_model import *
 import loss
 import optim
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+os.environ["CUDA_VISIBLE_DEVICES"] = '4'
 use_cuda = torch.cuda.is_available()
 
 if __name__ == "__main__":
     
+    fopen = open("training_log/log.txt", "w")
+
     train_batch_size, test_batch_size = 6, 32
-    num_epochs = 50
+    num_epochs = 80
     all_T = 100000
     save_dir = "/data/ajay_data/cvpr2023/iarpa/faces_webface_112x112/checkpoint"
 
@@ -36,7 +38,10 @@ if __name__ == "__main__":
         os.makedirs(os.path.dirname(save_dir), exist_ok=True)
 
     dataset = CustomImageFolderDataset(root = "/data/ajay_data/cvpr2023/iarpa/faces_webface_112x112/gt",
-                                       transform=T.Compose([T.ToTensor(),T.RandomCrop(112)]),
+                                       transform=T.Compose([T.ToTensor(),
+                                                            T.Normalize(
+                                                                         mean=[0.485, 0.456, 0.406],
+                                                                         std= [0.229, 0.224, 0.225])]),
                                        target_transform=None)
     adaface_num_subjects = len(dataset.classes)
     print("Number of Subjects for Adaface Training : {}".format(adaface_num_subjects))
@@ -53,9 +58,9 @@ if __name__ == "__main__":
     head.cuda()
     adaface_model.cuda()
 
-    optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
-    optimizer2, lr_scheduler2 = optim.configure_optimizers(adaface_model, head,
-                                                         lr=0.5, momentum=0.9, lr_milestones=[6, 15, 25], lr_gamma=0.1)
+    # optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
+    optimizer, lr_scheduler = optim.configure_optimizers(net, adaface_model, head, 
+                                                         lr=1e-4, momentum=0.9, lr_milestones=[6, 15, 25, 50], lr_gamma=0.1)
     
     
     turb_params = {
@@ -76,18 +81,28 @@ if __name__ == "__main__":
         print("====> Training Eoch [{}/{}]".format(epoch, num_epochs))
         start_time = time.time()
         psnr_list = []
+
         # --- Save the network parameters --- #
-        torch.save(net.state_dict(), '{}/checkpoint_restore{}.pth'.format(save_dir, epoch))
-        torch.save(head.state_dict(), '{}/checkpoint_head{}.pth'.format(save_dir, epoch))
-        torch.save(adaface_model.state_dict(), '{}/checkpoint_adaface{}.pth'.format(save_dir, epoch))
+        checkpoint = {
+            'epoch': epoch,
+            'model_net': net.state_dict(),
+            'model_head': head.state_dict(),
+            'model_adaface': adaface_model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler': lr_scheduler
+        }
+        torch.save(checkpoint, '{}/restoration_ckp_{}.pth'.format(save_dir, epoch))
+        # torch.save(net.state_dict(), '{}/checkpoint_restore_adam{}.pth'.format(save_dir, epoch))
+        # torch.save(head.state_dict(), '{}/checkpoint_head{}_adam.pth'.format(save_dir, epoch))
+        # torch.save(adaface_model.state_dict(), '{}/checkpoint_adaface_adam{}.pth'.format(save_dir, epoch))
 
         for batch_id, train_data in tqdm(enumerate(dataloader)):
             if batch_id > 5000:
                 break
-            step_num = batch_id + epoch * 5000 + 1
-            lr=lr_schedule_cosdecay(step_num,all_T)
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = lr
+            # step_num = batch_id + epoch * 5000 + 1
+            # lr=lr_schedule_cosdecay(step_num,all_T)
+            # for param_group in optimizer.param_groups:
+            #     param_group["lr"] = lr
             turb, gt, noise_loaded, target = train_data
             turb = turb.cuda()
             gt = gt.cuda()
@@ -95,7 +110,7 @@ if __name__ == "__main__":
             target = target.cuda()
 
             optimizer.zero_grad()
-            optimizer2.zero_grad()
+            # optimizer2.zero_grad()
 
             # --- Forward + Backward + Optimize --- #
             net.train()
@@ -116,17 +131,24 @@ if __name__ == "__main__":
             loss = Rec_Loss1 + Rec_Loss2 + Rec_Loss3 + AdaFace_loss
             loss.backward()
             optimizer.step()
-            optimizer2.step()
-            lr_scheduler2.step()
+            # optimizer2.step()
+            # lr_scheduler2.step()
             # --- To calculate average PSNR --- #
             psnr_list.extend(to_psnr(J, gt))
 
-            if not (batch_id % 100):
+            if not (batch_id % 200):
+                fopen.write('Epoch: {}, Iteration: {}, Loss: {:.3f}, Adaface_Loss: {:.3f}, Rec_Loss1: {:.3f}, Rec_loss2: {:.3f}, Rec_loss3: {:.3f}'.format(epoch, batch_id, loss, AdaFace_loss, Rec_Loss1, Rec_Loss2, Rec_Loss3))
                 print('Epoch: {}, Iteration: {}, Loss: {:.3f}, Adaface_Loss: {:.3f}, Rec_Loss1: {:.3f}, Rec_loss2: {:.3f}, Rec_loss3: {:.3f}'.format(epoch, batch_id, loss, AdaFace_loss, Rec_Loss1, Rec_Loss2, Rec_Loss3))
+                fopen.flush()
+            if not (batch_id % 1000):
+                utils.save_image(J[0], "{}/training_samples/recons_batch_id_{}.jpg".format(save_dir, batch_id))
+                utils.save_image(gt[0], "{}/training_samples/gt_batch_id_{}.jpg".format(save_dir, batch_id))
+                utils.save_image(sim_I[0], "{}/training_samples/sim_batch_id_{}.jpg".format(save_dir, batch_id))
 
         # --- Calculate the average training PSNR in one epoch --- #
         train_psnr = sum(psnr_list) / len(psnr_list)
         print("Train PSNR : {:.3f}".format(train_psnr))
-    
+
+    fopen.close()
     
     
